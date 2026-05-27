@@ -1,0 +1,17 @@
+name: 🧹 Cleanup Old Artifacts
+
+on:
+  # 1. اجرای خودکار هر 24 ساعت یک‌بار (ساعت 00:00 UTC)
+  schedule:
+    - cron: '0 0 * * *'
+  # 2. اجرای دستی از طریق دکمه "Run workflow" در تب Actions
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: حذف خودکار Artifact های قدیمی
+        uses: glassechidna/artifact-cleaner@master
+        with:
+          minimumAge: 86400  # این عدد یعنی 24 ساعت = 86400 ثانیه
