@@ -4,221 +4,67 @@ on:
   workflow_dispatch:
     inputs:
       pin_url:
-        description: 'آدرس پین Pinterest'
+        description: 'Pinterest Pin URL'
         required: true
-        default: 'https://www.pinterest.com/pin/8588087168299006/'
+
+permissions:
+  contents: read
 
 jobs:
   download-video:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 20
+
     steps:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: Install yt-dlp
+
+      - name: Install dependencies
         run: |
-          pip install yt-dlp
-      
-      - name: Create download script
+          python -m pip install --upgrade pip
+          pip install yt-dlp requests
+
+      - name: Create downloader script
         run: |
           cat > download_video.py << 'EOF'
-          import subprocess
-          import sys
+          import os
           import re
-          import json
-          import urllib.request
+          import sys
           import time
-          
-          def extract_video_url_with_api(pin_url):
-              """
-              روش اول: استفاده از API جایگزین
-              """
-              print("📡 روش 1: اتصال به سرویس جایگزین...")
-              
-              # استفاده از سرویس pinterestvideoer.com
-              api_url = f"https://pinterestvideoer.com/api/download?url={pin_url}"
-              
-              headers = {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                  'Accept': 'application/json'
-              }
-              
-              try:
-                  req = urllib.request.Request(api_url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      data = json.loads(response.read().decode())
-                      if data.get('success') and data.get('video_url'):
-                          print("✅ ویدیو پیدا شد!")
-                          return data['video_url']
-              except Exception as e:
-                  print(f"⚠️ خطا در روش اول: {e}")
-              
-              return None
-          
-          def extract_video_from_html(pin_url):
-              """
-              روش دوم: استخراج مستقیم از HTML صفحه
-              """
-              print("📡 روش 2: بررسی مستقیم صفحه پینترست...")
-              
-              headers = {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                  'Accept': 'text/html,application/xhtml+xml'
-              }
-              
-              try:
-                  req = urllib.request.Request(pin_url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      html = response.read().decode('utf-8')
-                      
-                      # جستجوی آدرس ویدیو در HTML
-                      patterns = [
-                          r'"video_list":\s*\{[^}]*"([^"]+\.m3u8[^"]*)"',
-                          r'"url":"([^"]+\.mp4[^"]*)"',
-                          r'https://v\d+\.pinimg\.com/videos/[^"\']+\.mp4',
-                          r'https://[^"\']+\.pinimg\.com/[^"\']+\.mp4'
-                      ]
-                      
-                      for pattern in patterns:
-                          matches = re.findall(pattern, html)
-                          if matches:
-                              video_url = matches[0].replace('\\/', '/')
-                              print("✅ ویدیو در HTML پیدا شد!")
-                              return video_url
-              except Exception as e:
-                  print(f"⚠️ خطا در روش دوم: {e}")
-              
-              return None
-          
-          def extract_with_embedded_player(pin_url):
-              """
-              روش سوم: استفاده از پخش‌کننده داخلی
-              """
-              print("📡 روش 3: بررسی پخش‌کننده داخلی...")
-              
-              headers = {'User-Agent': 'Mozilla/5.0'}
-              
-              try:
-                  # ابتدا صفحه اصلی
-                  req = urllib.request.Request(pin_url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      html = response.read().decode('utf-8')
-                      
-                      # پیدا کردن embedded-id
-                      embed_match = re.search(r'embed-pin[\'"]?\s*:\s*[\'"](\d+)[\'"]', html)
-                      if embed_match:
-                          embed_id = embed_match.group(1)
-                          embed_url = f"https://www.pinterest.com/pin/embed/{embed_id}/"
-                          
-                          # دریافت صفحه embed
-                          embed_req = urllib.request.Request(embed_url, headers=headers)
-                          with urllib.request.urlopen(embed_req, timeout=30) as embed_resp:
-                              embed_html = embed_resp.read().decode('utf-8')
-                              
-                              # جستجوی ویدیو در صفحه embed
-                              video_match = re.search(r'<video[^>]+src=[\'"]([^\'"]+\.(mp4|m3u8)[^\'"]*)[\'"]', embed_html)
-                              if video_match:
-                                  print("✅ ویدیو در صفحه Embed پیدا شد!")
-                                  return video_match.group(1)
-              except Exception as e:
-                  print(f"⚠️ خطا در روش سوم: {e}")
-              
-              return None
-          
-          def download_video(video_url, filename):
-              """
-              دانلود ویدیو با استفاده از yt-dlp یا مستقیم
-              """
-              print(f"\n📥 شروع دانلود...")
-              
-              # اگر آدرس مستقیم MP4 باشد
-              if video_url.endswith('.mp4'):
-                  headers = {'User-Agent': 'Mozilla/5.0'}
+          import json
+          import requests
+          import subprocess
+          from urllib.parse import urlparse
+
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "Accept-Language": "en-US,en;q=0.9"
+          }
+
+          SESSION = requests.Session()
+          SESSION.headers.update(HEADERS)
+
+          def validate_url(url):
+              parsed = urlparse(url)
+
+              if parsed.scheme not in ["http", "https"]:
+                  return False
+
+              allowed_domains = [
+                  "pinterest.com",
+                  "www.pinterest.com",
+                  "pin.it"
+              ]
+
+              return parsed.netloc in allowed_domains
+
+          def sanitize_filename(name):
+              name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+              return name[:100]
+
+          def request_with_retry(url, retries=3, timeout=30):
+              for attempt in range(retries):
                   try:
-                      req = urllib.request.Request(video_url, headers=headers)
-                      with urllib.request.urlopen(req, timeout=60) as response:
-                          with open(filename, 'wb') as f:
-                              f.write(response.read())
-                      return True
-                  except Exception as e:
-                      print(f"⚠️ دانلود مستقیم ناموفق: {e}")
-              
-              # استفاده از yt-dlp برای m3u8 یا فرمت‌های دیگر
-              cmd = ['yt-dlp', '-o', filename, video_url]
-              try:
-                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                  if result.returncode == 0:
-                      return True
-                  else:
-                      print(f"⚠️ خطا: {result.stderr[:200]}")
-              except Exception as e:
-                  print(f"⚠️ خطا: {e}")
-              
-              return False
-          
-          if __name__ == "__main__":
-              if len(sys.argv) < 2:
-                  print("لطفاً آدرس پین را وارد کنید")
-                  sys.exit(1)
-              
-              pin_url = sys.argv[1]
-              
-              # استخراج شناسه پین برای نام فایل
-              pin_id_match = re.search(r'/pin/(\d+)', pin_url)
-              if not pin_id_match:
-                  pin_id_match = re.search(r'pin\.it/([A-Za-z0-9]+)', pin_url)
-              
-              pin_id = pin_id_match.group(1) if pin_id_match else "video"
-              filename = f"{pin_id}.mp4"
-              
-              print("=" * 60)
-              print("🎬 Pinterest Video Downloader")
-              print("=" * 60)
-              print(f"🔗 {pin_url}\n")
-              
-              video_url = None
-              
-              # روش‌های مختلف
-              video_url = extract_video_from_html(pin_url)
-              
-              if not video_url:
-                  video_url = extract_with_embedded_player(pin_url)
-              
-              if not video_url:
-                  video_url = extract_video_url_with_api(pin_url)
-              
-              if video_url:
-                  print(f"\n🎥 آدرس ویدیو پیدا شد")
-                  if download_video(video_url, filename):
-                      print(f"\n✅ دانلود کامل شد: {filename}")
-                      
-                      # نمایش حجم فایل
-                      import os
-                      if os.path.exists(filename):
-                          size_mb = os.path.getsize(filename) / (1024 * 1024)
-                          print(f"📦 حجم: {size_mb:.2f} MB")
-                  else:
-                      print("\n❌ دانلود ناموفق بود")
-                      sys.exit(1)
-              else:
-                  print("\n❌ هیچ روشی موفق نبود!")
-                  print("\n💡 راهنمایی:")
-                  print("1. مطمئن شوید پین عمومی است")
-                  print("2. لینک را از خود پینترست کپی کنید (نه از موبایل)")
-                  print("3. پین حتماً ویدیو باشد، نه عکس")
-                  sys.exit(1)
-          EOF
-      
-      - name: Run downloader
-        run: |
-          python download_video.py "${{ github.event.inputs.pin_url }}"
-      
-      - name: Upload video
-        uses: actions/upload-artifact@v4
-        with:
-          name: pinterest-video
-          path: "*.mp4"
-          if-no-files-found: warn
+          retention-days: 3
